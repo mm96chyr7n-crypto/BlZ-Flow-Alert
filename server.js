@@ -9,7 +9,7 @@ dotenv.config();
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(__dirname));
 
 const PORT = Number(process.env.PORT || 3000);
 const POLL_SECONDS = Math.max(5, Number(process.env.POLL_SECONDS || 10));
