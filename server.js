@@ -263,7 +263,7 @@ app.get("/api/events", (_req,res)=>res.json({events:state.recent}));
 app.get("/api/markets", async (_req,res)=>{ if(!marketState.updatedAt||Date.now()-marketState.updatedAt>15000) await getMarkets(); res.json(marketState); });
 app.get("/api/signal", (_req,res)=>res.json({signal:computeSignal(),history:state.signalHistory||[]}));
 app.post("/api/scan", async (_req,res)=>res.json({alerts:await scan(),events:state.recent,stats:state.stats}));
-app.get("/", (_req,res)=>res.sendFile(path.join(__dirname,"public","index.html")));
+app.get("/", (_req,res)=>res.sendFile(path.join(__dirname,"index.html")));
 
 setInterval(()=>scan().catch(()=>{}),POLL_SECONDS*1000); scan().catch(()=>{});
 app.listen(PORT,()=>console.log(`BLZ Flow Alert running on http://localhost:${PORT}`));
