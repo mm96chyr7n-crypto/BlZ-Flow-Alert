@@ -22,6 +22,11 @@ const CRITICAL_THRESHOLD = Number(process.env.CRITICAL_THRESHOLD_BLZ || 1000000)
 const COINGECKO_ID = process.env.COINGECKO_ID || "bluzelle";
 const BLZ_CONTRACT_ETH = "0x5732046a883704404f284ce41ffadd5b007fd668";
 const BLZ_CONTRACT_BSC = "0x935a544bf5816e3a7c13db2efe3009ffda0acda2";
+const RPC_URLS = {
+  eth: process.env.ETH_RPC_URL || "https://ethereum-rpc.publicnode.com",
+  bsc: process.env.BSC_RPC_URL || "https://bsc-rpc.publicnode.com"
+};
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const STATE_FILE = path.join(__dirname, "state.json");
 
 function parseAddressBook(raw, chain) {
@@ -198,35 +203,35 @@ async function getPrice() {
   lastPriceAt = Date.now();
   return price;
 }
+async function rpc(chain, method, params=[]) {
+  const r = await axios.post(RPC_URLS[chain], { jsonrpc:"2.0", id:1, method, params }, { timeout:8000 });
+  if (r.data?.error) throw new Error(String(r.data.error.message || "RPC error").slice(0,120));
+  return r.data?.result;
+}
 async function getLatestBlock(chain) {
-  if (!process.env.ETHERSCAN_API_KEY) return 0;
-  try {
-    const chainid = chain === "eth" ? 1 : 56;
-    const r = await axios.get("https://api.etherscan.io/v2/api", { params: { chainid, module: "proxy", action: "eth_blockNumber", apikey: process.env.ETHERSCAN_API_KEY }, timeout: 6000 });
-    return parseInt(r.data?.result || "0x0", 16);
-  } catch { return 0; }
+  try { return parseInt(await rpc(chain,"eth_blockNumber") || "0x0",16); }
+  catch { return 0; }
 }
 async function scanEvm(chain, startBlock) {
-  if (!process.env.ETHERSCAN_API_KEY) return { events: [], latest: startBlock };
-  const chainid = chain === "eth" ? 1 : 56;
   const contract = chain === "eth" ? BLZ_CONTRACT_ETH : BLZ_CONTRACT_BSC;
   try {
-    const r = await axios.get("https://api.etherscan.io/v2/api", { params: { chainid, module: "account", action: "tokentx", contractaddress: contract, startblock: Math.max(0,startBlock), endblock: 999999999, page: 1, offset: 100, sort: "asc", apikey: process.env.ETHERSCAN_API_KEY }, timeout: 8000 });
-    if (!Array.isArray(r.data?.result)) {
-      if (String(r.data?.message || '').toLowerCase().includes('no transactions')) return { events: [], latest: startBlock, ok: true };
-      throw new Error(String(r.data?.result || r.data?.message || 'Explorer unavailable').slice(0, 120));
-    }
-    const events = r.data.result.map(x => {
-      const amount = Number(x.value) / 10 ** Number(x.tokenDecimal || 18);
-      const to = String(x.to).toLowerCase(), from = String(x.from).toLowerCase();
+    const head = await getLatestBlock(chain);
+    if (!head) throw new Error("Public RPC unavailable");
+    const fromBlock = startBlock ? Math.min(startBlock+1,head) : Math.max(0,head-2);
+    const toBlock = Math.min(head,fromBlock+999);
+    const logs = await rpc(chain,"eth_getLogs",[{address:contract,fromBlock:`0x${fromBlock.toString(16)}`,toBlock:`0x${toBlock.toString(16)}`,topics:[TRANSFER_TOPIC]}]);
+    if (!Array.isArray(logs)) throw new Error("Invalid RPC log response");
+    const now=Date.now(), blockSeconds=chain==="eth"?12:3;
+    const events = logs.filter(x=>x.topics?.length>=3).map(x => {
+      const amount = Number(BigInt(x.data || "0x0")) / 1e18;
+      const to = `0x${x.topics[2].slice(-40)}`.toLowerCase(), from = `0x${x.topics[1].slice(-40)}`.toLowerCase();
       const toExchange = exchangeLabel(chain,to), fromExchange = exchangeLabel(chain,from);
-      return { chain, hash:x.hash, logIndex:String(x.logIndex ?? x.transactionIndex ?? '0'), block:Number(x.blockNumber), time:Number(x.timeStamp)*1000, from,to,amount,
+      const block=parseInt(x.blockNumber,16);
+      return { chain, hash:x.transactionHash, logIndex:String(parseInt(x.logIndex,16)), block, time:now-Math.max(0,head-block)*blockSeconds*1000, from,to,amount,
         exchangeInflow:Boolean(toExchange), exchangeOutflow:Boolean(fromExchange), exchangeName:toExchange||fromExchange||null,
-        url: chain === "eth" ? `https://etherscan.io/tx/${x.hash}` : `https://bscscan.com/tx/${x.hash}` };
+        url: chain === "eth" ? `https://etherscan.io/tx/${x.transactionHash}` : `https://bscscan.com/tx/${x.transactionHash}` };
     });
-    // Advance within a block only when the next block is known to be outside the page.
-    // Re-reading the last block is safe because ingest deduplicates transaction logs.
-    return { events, latest: events.length ? Math.max(...events.map(e=>e.block)) : startBlock, ok: true, pageFull: events.length === 100 };
+    return { events, latest:toBlock, ok:true, source:"public-rpc", catchingUp:toBlock<head };
   } catch (e) { return { events: [], latest:startBlock, ok: false, error: e.message }; }
 }
 async function sendTelegram(e) {
@@ -255,7 +260,7 @@ async function scanOnce() {
   const alerts=[];
   for (const chain of ["eth", ...(String(process.env.WATCH_BSC).toLowerCase()==="true"?["bsc"]:[])]) {
     const r=await scanEvm(chain,state.lastBlock[chain]);
-    chainHealth[chain] = r.ok ? { ok:true, at:Date.now(), pageFull: r.pageFull || false } : { ok:false, error:r.error, at:Date.now() };
+    chainHealth[chain] = r.ok ? { ok:true, at:Date.now(), source:r.source, catchingUp:r.catchingUp||false } : { ok:false, error:r.error, at:Date.now() };
     if (r.ok) { state.lastBlock[chain]=r.latest; alerts.push(...ingest(r.events)); }
   }
   if (!price || Date.now()-lastPriceAt>30000) await getPrice();
@@ -276,12 +281,12 @@ function scan() {
   return scanPromise;
 }
 
-app.get("/api/status", async (_req,res)=>{ if(!price||Date.now()-lastPriceAt>30000) await getPrice(); res.set('Cache-Control','no-store'); res.json({ok:true,price,pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate,chainHealth,scanError,monitoringConfigured:Boolean(process.env.ETHERSCAN_API_KEY)}); });
+app.get("/api/status", async (_req,res)=>{ if(!price||Date.now()-lastPriceAt>30000) await getPrice(); res.set('Cache-Control','no-store'); res.json({ok:true,price,pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate,chainHealth,scanError,monitoringConfigured:Boolean(RPC_URLS.eth),monitoringMode:"public-rpc"}); });
 app.get("/api/events", (_req,res)=>res.json({events:state.recent}));
 app.get("/api/markets", async (_req,res)=>{ if(!marketState.updatedAt||Date.now()-marketState.updatedAt>15000) await getMarkets(); res.json(marketState); });
 app.get("/api/signal", (_req,res)=>res.json({signal:computeSignal(),history:state.signalHistory||[]}));
 app.post("/api/scan", (_req,res)=>res.status(405).json({error:'Scanning runs on the server; refresh /api/status for results.'}));
-app.get("/{*splat}", (_req,res)=>res.sendFile(path.join(__dirname,"index.html")));
+app.use((req,res)=>{ if(req.method !== "GET") return res.sendStatus(404); res.sendFile(path.join(__dirname,"index.html")); });
 
 setInterval(()=>scan().catch(()=>{}),POLL_SECONDS*1000); scan().catch(()=>{});
 app.listen(PORT,()=>console.log(`BLZ Flow Alert running on http://localhost:${PORT}`));

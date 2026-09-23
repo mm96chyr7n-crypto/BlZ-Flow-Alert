@@ -17,8 +17,10 @@ services:
         value: true
       - key: COINGECKO_ID
         value: bluzelle
-      - key: ETHERSCAN_API_KEY
-        sync: false
+      - key: ETH_RPC_URL
+        value: https://ethereum-rpc.publicnode.com
+      - key: BSC_RPC_URL
+        value: https://bsc-rpc.publicnode.com
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID

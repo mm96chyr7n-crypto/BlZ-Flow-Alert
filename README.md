@@ -26,7 +26,7 @@ The app only calls a transfer an exchange inflow when the destination address is
 
 1. Install Node.js 20+.
 2. Copy `.env.example` to `.env`.
-3. Add an Etherscan API key.
+3. The included public blockchain feeds work without an API key. You can optionally set `ETH_RPC_URL` and `BSC_RPC_URL` to use another RPC provider.
 4. Optionally add independently verified exchange wallets, for example `0xabc...|Coinbase,0xdef...|KuCoin`.
 5. Optionally add a Telegram bot token and chat ID.
 6. Run `npm install` and then `npm start`.
@@ -70,7 +70,7 @@ This build is a Progressive Web App (PWA). Once it is deployed to an HTTPS addre
 The server must remain online for continuous market/on-chain monitoring. The included `render.yaml` and `Dockerfile` make cloud deployment straightforward.
 
 ## Production checklist
-- Add a valid Etherscan API key.
+- The default public Ethereum and BNB Chain RPC feeds require no API key.
 - Configure Telegram for reliable background alerts if desired.
 - Configure verified exchange/deposit addresses for exchange-flow classification.
 - Keep API secrets in hosting environment variables, never in `public/`.
@@ -78,7 +78,11 @@ The server must remain online for continuous market/on-chain monitoring. The inc
 
 ## v6 reliability update
 
-The server owns blockchain scanning; opening several dashboards no longer starts several scans. The dashboard reads status, events and markets concurrently, shows the time of the last successful Ethereum check and reports explorer errors. Browser alerts operate only while the app is open; use Telegram for background delivery. The explorer's first 100 results per request may delay catch-up after very busy periods, so monitor the displayed chain check time and block cursor. A configured Etherscan key and an always-on host are required for continuous chain monitoring.
+The server owns blockchain scanning; opening several dashboards no longer starts several scans. The dashboard reads status, events and markets concurrently, shows the time of the last successful Ethereum check and reports feed errors. Browser alerts operate only while the app is open; use Telegram for background delivery.
+
+## v7 no-key monitoring
+
+V7 reads BLZ transfers from public Ethereum and BNB Chain RPC feeds, so the dashboard no longer displays “setup needed” when no Etherscan key exists. Telegram remains optional. The dashboard shows “live” after its first successful Ethereum scan and reports when it is catching up.
 
 ## GitHub upload layout
 
