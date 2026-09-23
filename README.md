@@ -54,3 +54,32 @@ V4 adds public order-book feeds for Coinbase BLZ/USD, Kraken BLZ/USD, KuCoin BLZ
 Binance is intentionally not used as a current BLZ market source because Binance delisted BLZ spot pairs in December 2024. Exchange APIs can change or rate-limit public endpoints; the dashboard marks an unavailable venue rather than treating missing data as a signal.
 
 The score is an activity/market-pressure indicator, not a prediction and not a buy/sell instruction. Thin books can change rapidly and displayed depth can be cancelled before execution.
+
+
+# iPhone Home Screen edition
+
+This build is a Progressive Web App (PWA). Once it is deployed to an HTTPS address:
+
+1. Open that address in Safari on the iPhone.
+2. Tap Share.
+3. Tap Add to Home Screen.
+4. Tap Add.
+5. Launch BLZ Alert from the new Home Screen icon.
+6. Use the in-app notification control to grant notifications where supported.
+
+The server must remain online for continuous market/on-chain monitoring. The included `render.yaml` and `Dockerfile` make cloud deployment straightforward.
+
+## Production checklist
+- Add a valid Etherscan API key.
+- Configure Telegram for reliable background alerts if desired.
+- Configure verified exchange/deposit addresses for exchange-flow classification.
+- Keep API secrets in hosting environment variables, never in `public/`.
+- Use an HTTPS deployment.
+
+## v6 reliability update
+
+The server owns blockchain scanning; opening several dashboards no longer starts several scans. The dashboard reads status, events and markets concurrently, shows the time of the last successful Ethereum check and reports explorer errors. Browser alerts operate only while the app is open; use Telegram for background delivery. The explorer's first 100 results per request may delay catch-up after very busy periods, so monitor the displayed chain check time and block cursor. A configured Etherscan key and an always-on host are required for continuous chain monitoring.
+
+## GitHub upload layout
+
+This edition is arranged for the existing BLZ-Flow-Alert repository: upload the files in this folder into the repository root. All PWA assets sit alongside server.js. GitHub's upload page should show server.js, package.json, index.html and the other assets at the top level before committing. Do not upload the ZIP itself as the app deployment.

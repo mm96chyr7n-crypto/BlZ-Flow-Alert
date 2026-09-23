@@ -9,7 +9,10 @@ dotenv.config();
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.use(express.json());
-app.use(express.static(__dirname));
+// Serve only PWA assets; keep server code, state and configuration private.
+for (const asset of ["index.html", "manifest.json", "sw.js", "icon-192.png", "icon-512.png", "apple-touch-icon.png"]) {
+  app.get(`/${asset}`, (_req, res) => res.sendFile(path.join(__dirname, asset)));
+}
 
 const PORT = Number(process.env.PORT || 3000);
 const POLL_SECONDS = Math.max(5, Number(process.env.POLL_SECONDS || 10));
@@ -38,6 +41,9 @@ try { state = { ...state, ...JSON.parse(fs.readFileSync(STATE_FILE, "utf8")) }; 
 let price = null;
 let lastPriceAt = 0;
 let marketState = { venues: [], aggregate: null, history: [], updatedAt: null };
+let scanPromise = null;
+let scanError = null;
+let chainHealth = { eth: null, bsc: null };
 
 const MARKET_VENUES = [
   { id:'coinbase', label:'Coinbase', pair:'BLZ-USD', quote:'USD', url:'https://api.exchange.coinbase.com/products/BLZ-USD' },
@@ -206,17 +212,22 @@ async function scanEvm(chain, startBlock) {
   const contract = chain === "eth" ? BLZ_CONTRACT_ETH : BLZ_CONTRACT_BSC;
   try {
     const r = await axios.get("https://api.etherscan.io/v2/api", { params: { chainid, module: "account", action: "tokentx", contractaddress: contract, startblock: Math.max(0,startBlock), endblock: 999999999, page: 1, offset: 100, sort: "asc", apikey: process.env.ETHERSCAN_API_KEY }, timeout: 8000 });
-    if (!Array.isArray(r.data?.result)) return { events: [], latest: startBlock };
+    if (!Array.isArray(r.data?.result)) {
+      if (String(r.data?.message || '').toLowerCase().includes('no transactions')) return { events: [], latest: startBlock, ok: true };
+      throw new Error(String(r.data?.result || r.data?.message || 'Explorer unavailable').slice(0, 120));
+    }
     const events = r.data.result.map(x => {
       const amount = Number(x.value) / 10 ** Number(x.tokenDecimal || 18);
       const to = String(x.to).toLowerCase(), from = String(x.from).toLowerCase();
       const toExchange = exchangeLabel(chain,to), fromExchange = exchangeLabel(chain,from);
-      return { chain, hash:x.hash, block:Number(x.blockNumber), time:Number(x.timeStamp)*1000, from,to,amount,
+      return { chain, hash:x.hash, logIndex:String(x.logIndex ?? x.transactionIndex ?? '0'), block:Number(x.blockNumber), time:Number(x.timeStamp)*1000, from,to,amount,
         exchangeInflow:Boolean(toExchange), exchangeOutflow:Boolean(fromExchange), exchangeName:toExchange||fromExchange||null,
         url: chain === "eth" ? `https://etherscan.io/tx/${x.hash}` : `https://bscscan.com/tx/${x.hash}` };
     });
-    return { events, latest: events.length ? Math.max(...events.map(e=>e.block))+1 : startBlock };
-  } catch { return { events: [], latest:startBlock }; }
+    // Advance within a block only when the next block is known to be outside the page.
+    // Re-reading the last block is safe because ingest deduplicates transaction logs.
+    return { events, latest: events.length ? Math.max(...events.map(e=>e.block)) : startBlock, ok: true, pageFull: events.length === 100 };
+  } catch (e) { return { events: [], latest:startBlock, ok: false, error: e.message }; }
 }
 async function sendTelegram(e) {
   if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return;
@@ -228,7 +239,7 @@ async function sendTelegram(e) {
 function ingest(events) {
   const alerts=[];
   for (const e of events) {
-    if (state.history.some(x=>x.hash===e.hash && x.chain===e.chain)) continue;
+    if (state.history.some(x=>x.hash===e.hash && x.chain===e.chain && x.logIndex===e.logIndex)) continue;
     const score=anomalyScore(e.amount); e.anomalyScore=score;
     e.severity=severity(e.amount,e.exchangeInflow,score);
     state.history.unshift(e);
@@ -238,12 +249,14 @@ function ingest(events) {
   state.recent=state.recent.slice(0,150); computeStats(); computeSignal(); saveState();
   return alerts;
 }
-async function scan() {
+async function scanOnce() {
   if (!state.lastBlock.eth) state.lastBlock.eth=Math.max(0,(await getLatestBlock("eth"))-2);
   if (String(process.env.WATCH_BSC).toLowerCase()==="true" && !state.lastBlock.bsc) state.lastBlock.bsc=Math.max(0,(await getLatestBlock("bsc"))-2);
   const alerts=[];
   for (const chain of ["eth", ...(String(process.env.WATCH_BSC).toLowerCase()==="true"?["bsc"]:[])]) {
-    const r=await scanEvm(chain,state.lastBlock[chain]); state.lastBlock[chain]=r.latest; alerts.push(...ingest(r.events));
+    const r=await scanEvm(chain,state.lastBlock[chain]);
+    chainHealth[chain] = r.ok ? { ok:true, at:Date.now(), pageFull: r.pageFull || false } : { ok:false, error:r.error, at:Date.now() };
+    if (r.ok) { state.lastBlock[chain]=r.latest; alerts.push(...ingest(r.events)); }
   }
   if (!price || Date.now()-lastPriceAt>30000) await getPrice();
   await getMarkets();
@@ -255,15 +268,20 @@ async function scan() {
   }
   for (const e of alerts) await sendTelegram(e);
   saveState();
+  scanError = null;
   return alerts;
 }
+function scan() {
+  if (!scanPromise) scanPromise = scanOnce().catch(e => { scanError = e.message; throw e; }).finally(() => { scanPromise = null; });
+  return scanPromise;
+}
 
-app.get("/api/status", async (_req,res)=>{ if(!price||Date.now()-lastPriceAt>30000) await getPrice(); res.json({ok:true,price,pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate}); });
+app.get("/api/status", async (_req,res)=>{ if(!price||Date.now()-lastPriceAt>30000) await getPrice(); res.set('Cache-Control','no-store'); res.json({ok:true,price,pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate,chainHealth,scanError,monitoringConfigured:Boolean(process.env.ETHERSCAN_API_KEY)}); });
 app.get("/api/events", (_req,res)=>res.json({events:state.recent}));
 app.get("/api/markets", async (_req,res)=>{ if(!marketState.updatedAt||Date.now()-marketState.updatedAt>15000) await getMarkets(); res.json(marketState); });
 app.get("/api/signal", (_req,res)=>res.json({signal:computeSignal(),history:state.signalHistory||[]}));
-app.post("/api/scan", async (_req,res)=>res.json({alerts:await scan(),events:state.recent,stats:state.stats}));
-app.get("/", (_req,res)=>res.sendFile(path.join(__dirname,"index.html")));
+app.post("/api/scan", (_req,res)=>res.status(405).json({error:'Scanning runs on the server; refresh /api/status for results.'}));
+app.get("*", (_req,res)=>res.sendFile(path.join(__dirname,"index.html")));
 
 setInterval(()=>scan().catch(()=>{}),POLL_SECONDS*1000); scan().catch(()=>{});
 app.listen(PORT,()=>console.log(`BLZ Flow Alert running on http://localhost:${PORT}`));

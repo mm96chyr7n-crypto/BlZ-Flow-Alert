@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: blz-flow-alert
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/status
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: DEFAULT_THRESHOLD_BLZ
+        value: 100000
+      - key: POLL_SECONDS
+        value: 8
+      - key: WATCH_BSC
+        value: true
+      - key: COINGECKO_ID
+        value: bluzelle
+      - key: ETHERSCAN_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
