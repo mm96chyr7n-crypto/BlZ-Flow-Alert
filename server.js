@@ -68,7 +68,9 @@ const MARKET_VENUES = [
 ];
 function safeNum(x){ const n=Number(x); return Number.isFinite(n)?n:0; }
 function parseDigitalSurgeTicker(data) {
-  const row = data?.results?.find(item => item && Object.hasOwn(item,"BLZ"))?.BLZ;
+  // The live filtered endpoint returns {"BLZ": {...}}; its docs also show a
+  // paginated results array, so accept both formats.
+  const row = data?.BLZ ?? data?.results?.find(item => item && Object.hasOwn(item,"BLZ"))?.BLZ;
   const buy=Number(row?.buy), sell=Number(row?.sell), yesterday=Number(row?.["24h_ago"]);
   if (row?.tradeable !== true || !Number.isFinite(buy) || buy<=0 || !Number.isFinite(sell) || sell<=0)
     throw new Error("BLZ quote unavailable or not tradeable");
