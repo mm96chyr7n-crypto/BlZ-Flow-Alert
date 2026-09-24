@@ -1,4 +1,18 @@
-# BLZ Flow Alert v2
+# BLZ Flow Alert v9
+
+## Digital Surge BLZ/AUD alerts
+
+The dashboard now reads Digital Surge's public BLZ ticker (no API key). It shows the indicative AUD buy and sell quotes separately. The sell quote is checked about once a minute; alerts fire when it moves at least 5% over a fully observed hour or 10% versus the ticker's 24-hour reference. The existing `MOVE_1H_PCT` and `MOVE_24H_PCT` settings apply. Telegram delivers alerts in the background when already configured.
+
+Optional: set `DS_BLZ_SELL_TARGET_AUD` in Render's environment variables to an AUD price per BLZ, such as `0.025`. The app sends one alert when the indicative sell quote reaches or exceeds that target, then rearms after it falls more than 0.5% below it. Leave it unset to watch percentage moves only. This does not place an order. Quotes are indicative and may differ from an executed sale, especially in a fast move.
+
+Digital Surge's public ticker provides prices, not its order book or identifiable deposit-wallet flows. The Digital Surge feed is separate from the exchange-pressure score. If its API is unavailable, the dashboard marks the feed unavailable and does not generate Digital Surge alerts from old prices.
+
+## DOGE and ADA price alerts
+
+The current build adds Dogecoin and Cardano price cards and movement alerts. The server checks CoinGecko about once per minute. It records a move when either coin changes at least 5% over a fully observed hour or 10% over CoinGecko's 24-hour window. A six-hour cooldown and threshold reset prevent repeated alerts for one continuing move. Set `MOVE_1H_PCT` and `MOVE_24H_PCT` as Render environment variables to change the defaults. Existing Telegram settings deliver these alerts while the app is closed; browser notifications work only while open. The DOGE and ADA cards show USD and AUD quotes. One-hour comparison starts after the server collects an hour of prices.
+
+DOGE and ADA alerts use price data. BLZ retains its existing blockchain flow, order-book and Spike Watch features. A price move alone does not establish its cause. The free price feed can lag or be rate limited, and an idle server cannot deliver immediate alerts.
 
 A self-hosted BLZ whale-flow monitor for Ethereum and BNB Chain.
 
@@ -26,7 +40,7 @@ The app only calls a transfer an exchange inflow when the destination address is
 
 1. Install Node.js 20+.
 2. Copy `.env.example` to `.env`.
-3. The included public blockchain feeds work without an API key. You can optionally set `ETH_RPC_URL` and `BSC_RPC_URL` to use another RPC provider.
+3. The public blockchain feeds work without an API key. You can optionally set `ETH_RPC_URL` and `BSC_RPC_URL` to use another RPC provider.
 4. Optionally add independently verified exchange wallets, for example `0xabc...|Coinbase,0xdef...|KuCoin`.
 5. Optionally add a Telegram bot token and chat ID.
 6. Run `npm install` and then `npm start`.

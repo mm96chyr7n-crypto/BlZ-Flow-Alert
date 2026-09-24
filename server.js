@@ -23,6 +23,8 @@ const COINGECKO_ID = process.env.COINGECKO_ID || "bluzelle";
 const EXTRA_ASSETS = { dogecoin: "DOGE", cardano: "ADA" };
 const MOVE_1H_PCT = Math.max(0.1, Number(process.env.MOVE_1H_PCT || 5));
 const MOVE_24H_PCT = Math.max(0.1, Number(process.env.MOVE_24H_PCT || 10));
+const DS_BLZ_SELL_TARGET_AUD = Math.max(0, Number(process.env.DS_BLZ_SELL_TARGET_AUD || 0));
+const DS_TICKER_URL = "https://app.digitalsurge.com.au/api/public/broker/ticker/";
 const BLZ_CONTRACT_ETH = "0x5732046a883704404f284ce41ffadd5b007fd668";
 const BLZ_CONTRACT_BSC = "0x935a544bf5816e3a7c13db2efe3009ffda0acda2";
 const RPC_URLS = {
@@ -51,6 +53,8 @@ let price = null;
 let lastPriceAt = 0;
 let pricePromise = null;
 let extraPrices = {};
+let digitalSurge = { ok:false, error:"Waiting for first quote" };
+let lastDigitalSurgeAt = 0;
 let marketState = { venues: [], aggregate: null, history: [], updatedAt: null };
 let scanPromise = null;
 let scanError = null;
@@ -63,6 +67,60 @@ const MARKET_VENUES = [
   { id:'gate', label:'Gate', pair:'BLZ_USDT', quote:'USDT', url:'https://api.gateio.ws/api/v4' }
 ];
 function safeNum(x){ const n=Number(x); return Number.isFinite(n)?n:0; }
+function parseDigitalSurgeTicker(data) {
+  const row = data?.results?.find(item => item && Object.hasOwn(item,"BLZ"))?.BLZ;
+  const buy=Number(row?.buy), sell=Number(row?.sell), yesterday=Number(row?.["24h_ago"]);
+  if (row?.tradeable !== true || !Number.isFinite(buy) || buy<=0 || !Number.isFinite(sell) || sell<=0)
+    throw new Error("BLZ quote unavailable or not tradeable");
+  return {buyAud:buy,sellAud:sell,change24h:yesterday>0?100*(sell/yesterday-1):null};
+}
+async function fetchDigitalSurge() {
+  try {
+    const r=await axios.get(DS_TICKER_URL,{params:{asset:"BLZ"},timeout:6000});
+    const quote=parseDigitalSurgeTicker(r.data), at=Date.now();
+    const history=[...(state.digitalSurgeHistory||[]),{sellAud:quote.sellAud,at}]
+      .filter(x=>at-x.at<=65*60e3).slice(-130);
+    state.digitalSurgeHistory=history;
+    const baseline=[...history].reverse().find(x=>at-x.at>=60*60e3);
+    digitalSurge={ok:true,...quote,change1h:baseline?.sellAud>0?100*(quote.sellAud/baseline.sellAud-1):null,at,source:"Digital Surge"};
+    await checkDigitalSurgeAlerts();
+  } catch(e) {
+    digitalSurge={...digitalSurge,ok:false,error:String(e.response?.status||e.message||"unavailable").slice(0,100)};
+  }
+  lastDigitalSurgeAt=Date.now();
+  return digitalSurge;
+}
+async function checkDigitalSurgeAlerts() {
+  const p=digitalSurge;
+  const candidates=[["1h",p.change1h,MOVE_1H_PCT],["24h",p.change24h,MOVE_24H_PCT]];
+  for (const [window,change,threshold] of candidates) {
+    if (change==null) continue;
+    const direction=change>=0?"up":"down", key=`DS:BLZ:${window}:${direction}`;
+    const prior=state.moveAlertState?.[key]||{active:false,at:0};
+    if (Math.abs(change)<threshold*0.8) { state.moveAlertState[key]={...prior,active:false}; continue; }
+    if (Math.abs(change)<threshold || prior.active || Date.now()-prior.at<6*60*60e3) continue;
+    state.moveAlertState[key]={active:true,at:p.at};
+    await recordDigitalSurgeAlert({symbol:"BLZ",window,change,aud:p.sellAud,at:p.at,source:"Digital Surge",kind:"movement"});
+  }
+  if (DS_BLZ_SELL_TARGET_AUD>0) {
+    const key="DS:BLZ:target", prior=state.moveAlertState?.[key]||{active:false,at:0};
+    if (p.sellAud<DS_BLZ_SELL_TARGET_AUD*0.995) state.moveAlertState[key]={...prior,active:false};
+    else if (p.sellAud>=DS_BLZ_SELL_TARGET_AUD && !prior.active) {
+      state.moveAlertState[key]={active:true,at:p.at};
+      await recordDigitalSurgeAlert({symbol:"BLZ",window:"target",aud:p.sellAud,targetAud:DS_BLZ_SELL_TARGET_AUD,at:p.at,source:"Digital Surge",kind:"target"});
+    }
+  }
+}
+async function recordDigitalSurgeAlert(alert) {
+  state.moveAlerts=[alert,...(state.moveAlerts||[])].slice(0,30);
+  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+    const description=alert.kind==="target"
+      ?`sell quote A$${alert.aud.toFixed(6)} reached A$${alert.targetAud.toFixed(6)}`
+      :`sell quote moved ${alert.change>=0?"+":""}${alert.change.toFixed(2)}% over ${alert.window} to A$${alert.aud.toFixed(6)}`;
+    try { await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {chat_id:process.env.TELEGRAM_CHAT_ID,text:`🔔 Digital Surge BLZ: ${description}\nIndicative AUD sell price • ${new Date(alert.at).toISOString()}\nNo trade was placed; execution price may differ.`},{timeout:6000}); } catch {}
+  }
+}
 function bookMetrics(bids=[], asks=[], depth=15){
   const b=bids.slice(0,depth).map(x=>[safeNum(x[0]),safeNum(x[1])]).filter(x=>x[0]&&x[1]);
   const a=asks.slice(0,depth).map(x=>[safeNum(x[0]),safeNum(x[1])]).filter(x=>x[0]&&x[1]);
@@ -308,6 +366,7 @@ async function scanOnce() {
     if (r.ok) { state.lastBlock[chain]=r.latest; alerts.push(...ingest(r.events)); }
   }
   if (!lastPriceAt || Date.now()-lastPriceAt>60000) await getPrice();
+  if (!lastDigitalSurgeAt || Date.now()-lastDigitalSurgeAt>60000) await fetchDigitalSurge();
   await getMarkets();
   const previousLevel=state.signal?.level;
   const sig=computeSignal();
@@ -325,7 +384,7 @@ function scan() {
   return scanPromise;
 }
 
-app.get("/api/status", async (_req,res)=>{ if(!lastPriceAt||Date.now()-lastPriceAt>60000) await getPrice(); res.set('Cache-Control','no-store'); res.json({ok:true,price,extraPrices,moveAlerts:state.moveAlerts||[],moveThresholds:{hour:MOVE_1H_PCT,day:MOVE_24H_PCT},pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate,chainHealth,scanError,monitoringConfigured:Boolean(RPC_URLS.eth),monitoringMode:"public-rpc"}); });
+app.get("/api/status", async (_req,res)=>{ if(!lastPriceAt||Date.now()-lastPriceAt>60000) await getPrice(); if(!lastDigitalSurgeAt||Date.now()-lastDigitalSurgeAt>60000) await fetchDigitalSurge(); res.set('Cache-Control','no-store'); res.json({ok:true,price,extraPrices,digitalSurge,digitalSurgeSellTargetAud:DS_BLZ_SELL_TARGET_AUD,moveAlerts:state.moveAlerts||[],moveThresholds:{hour:MOVE_1H_PCT,day:MOVE_24H_PCT},pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate,chainHealth,scanError,monitoringConfigured:Boolean(RPC_URLS.eth),monitoringMode:"public-rpc"}); });
 app.get("/api/events", (_req,res)=>res.json({events:state.recent}));
 app.get("/api/markets", async (_req,res)=>{ if(!marketState.updatedAt||Date.now()-marketState.updatedAt>15000) await getMarkets(); res.json(marketState); });
 app.get("/api/signal", (_req,res)=>res.json({signal:computeSignal(),history:state.signalHistory||[]}));
