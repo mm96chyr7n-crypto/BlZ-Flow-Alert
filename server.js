@@ -20,6 +20,9 @@ const DEFAULT_THRESHOLD = Number(process.env.DEFAULT_THRESHOLD_BLZ || 100000);
 const MAJOR_THRESHOLD = Number(process.env.MAJOR_THRESHOLD_BLZ || 250000);
 const CRITICAL_THRESHOLD = Number(process.env.CRITICAL_THRESHOLD_BLZ || 1000000);
 const COINGECKO_ID = process.env.COINGECKO_ID || "bluzelle";
+const EXTRA_ASSETS = { dogecoin: "DOGE", cardano: "ADA" };
+const MOVE_1H_PCT = Math.max(0.1, Number(process.env.MOVE_1H_PCT || 5));
+const MOVE_24H_PCT = Math.max(0.1, Number(process.env.MOVE_24H_PCT || 10));
 const BLZ_CONTRACT_ETH = "0x5732046a883704404f284ce41ffadd5b007fd668";
 const BLZ_CONTRACT_BSC = "0x935a544bf5816e3a7c13db2efe3009ffda0acda2";
 const RPC_URLS = {
@@ -42,10 +45,12 @@ const addressBook = [
 ];
 const exchangeMap = new Map(addressBook.map(x => [`${x.chain}:${x.address}`, x.label]));
 
-let state = { lastBlock: { eth: 0, bsc: 0 }, recent: [], history: [], stats: {}, priceHistory: [], signal: null, signalHistory: [], updatedAt: null };
+let state = { lastBlock: { eth: 0, bsc: 0 }, recent: [], history: [], stats: {}, priceHistory: [], signal: null, signalHistory: [], assetHistory: {}, moveAlerts: [], moveAlertState: {}, updatedAt: null };
 try { state = { ...state, ...JSON.parse(fs.readFileSync(STATE_FILE, "utf8")) }; } catch {}
 let price = null;
 let lastPriceAt = 0;
+let pricePromise = null;
+let extraPrices = {};
 let marketState = { venues: [], aggregate: null, history: [], updatedAt: null };
 let scanPromise = null;
 let scanError = null;
@@ -192,17 +197,53 @@ function computeSignal() {
   return signal;
 }
 
-async function getPrice() {
+async function fetchPrices() {
   try {
-    const r = await axios.get("https://api.coingecko.com/api/v3/simple/price", { params: { ids: COINGECKO_ID, vs_currencies: "usd,aud", include_24hr_change: "true" }, timeout: 7000 });
+    const r = await axios.get("https://api.coingecko.com/api/v3/simple/price", { params: { ids: [COINGECKO_ID,...Object.keys(EXTRA_ASSETS)].join(','), vs_currencies: "usd,aud", include_24hr_change: "true" }, timeout: 7000 });
     const p = r.data?.[COINGECKO_ID];
-    if (p) {
+    if (Number(p?.usd) > 0) {
       price = { usd: p.usd, aud: p.aud, change24h: p.usd_24h_change, at: Date.now() };
       state.priceHistory = [...(state.priceHistory||[]), price].filter(x => Date.now()-x.at <= 24*60*60e3).slice(-1000);
     }
+    for (const [id,symbol] of Object.entries(EXTRA_ASSETS)) {
+      const quote=r.data?.[id];
+      if (!(Number(quote?.usd)>0)) continue;
+      const at=Date.now();
+      const history=[...(state.assetHistory?.[symbol]||[]),{usd:Number(quote.usd),at}].filter(x=>at-x.at<=65*60e3).slice(-130);
+      state.assetHistory={...(state.assetHistory||{}),[symbol]:history};
+      // Use a complete one-hour observation window; do not label a shorter interval as 1h.
+      const baseline=[...history].reverse().find(x=>at-x.at>=60*60e3);
+      const change1h=baseline?100*(Number(quote.usd)/baseline.usd-1):null;
+      extraPrices[symbol]={usd:Number(quote.usd),aud:Number(quote.aud)||null,change24h:Number.isFinite(Number(quote.usd_24h_change))?Number(quote.usd_24h_change):null,change1h,at,source:'CoinGecko'};
+    }
+    await checkMoveAlerts();
   } catch {}
   lastPriceAt = Date.now();
   return price;
+}
+function getPrice() {
+  if (!pricePromise) pricePromise=fetchPrices().finally(()=>{pricePromise=null});
+  return pricePromise;
+}
+async function checkMoveAlerts() {
+  for (const [symbol,p] of Object.entries(extraPrices)) {
+    if (Date.now()-p.at>120000) continue;
+    const candidates=[['1h',p.change1h,MOVE_1H_PCT],['24h',p.change24h,MOVE_24H_PCT]];
+    for (const [window,change,threshold] of candidates) {
+      if (change==null) continue;
+      const direction=change>=0?'up':'down', key=`${symbol}:${window}:${direction}`;
+      const prior=state.moveAlertState?.[key]||{active:false,at:0};
+      if (Math.abs(change)<threshold*0.8) { state.moveAlertState[key]={...prior,active:false}; continue; }
+      if (Math.abs(change)<threshold || prior.active || Date.now()-prior.at<6*60*60e3) continue;
+      const alert={symbol,window,change,usd:p.usd,aud:p.aud,at:p.at,source:p.source};
+      state.moveAlerts=[alert,...(state.moveAlerts||[])].slice(0,30);
+      state.moveAlertState[key]={active:true,at:p.at};
+      if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+        const message=`📈 ${symbol} price move: ${change>=0?'+':''}${change.toFixed(2)}% over ${window}\nUSD $${p.usd.toFixed(5)}${p.aud?` • AUD A$${p.aud.toFixed(5)}`:''}\nSource: CoinGecko • ${new Date(p.at).toISOString()}\nPrice movement only; cause and future direction unconfirmed.`;
+        try { await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,{chat_id:process.env.TELEGRAM_CHAT_ID,text:message},{timeout:6000}); } catch {}
+      }
+    }
+  }
 }
 async function rpc(chain, method, params=[]) {
   const r = await axios.post(RPC_URLS[chain], { jsonrpc:"2.0", id:1, method, params }, { timeout:8000 });
@@ -266,7 +307,7 @@ async function scanOnce() {
     chainHealth[chain] = r.ok ? { ok:true, at:Date.now(), source:r.source, catchingUp:r.catchingUp||false } : { ok:false, error:r.error, at:Date.now() };
     if (r.ok) { state.lastBlock[chain]=r.latest; alerts.push(...ingest(r.events)); }
   }
-  if (!price || Date.now()-lastPriceAt>30000) await getPrice();
+  if (!lastPriceAt || Date.now()-lastPriceAt>60000) await getPrice();
   await getMarkets();
   const previousLevel=state.signal?.level;
   const sig=computeSignal();
@@ -284,7 +325,7 @@ function scan() {
   return scanPromise;
 }
 
-app.get("/api/status", async (_req,res)=>{ if(!price||Date.now()-lastPriceAt>30000) await getPrice(); res.set('Cache-Control','no-store'); res.json({ok:true,price,pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate,chainHealth,scanError,monitoringConfigured:Boolean(RPC_URLS.eth),monitoringMode:"public-rpc"}); });
+app.get("/api/status", async (_req,res)=>{ if(!lastPriceAt||Date.now()-lastPriceAt>60000) await getPrice(); res.set('Cache-Control','no-store'); res.json({ok:true,price,extraPrices,moveAlerts:state.moveAlerts||[],moveThresholds:{hour:MOVE_1H_PCT,day:MOVE_24H_PCT},pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate,chainHealth,scanError,monitoringConfigured:Boolean(RPC_URLS.eth),monitoringMode:"public-rpc"}); });
 app.get("/api/events", (_req,res)=>res.json({events:state.recent}));
 app.get("/api/markets", async (_req,res)=>{ if(!marketState.updatedAt||Date.now()-marketState.updatedAt>15000) await getMarkets(); res.json(marketState); });
 app.get("/api/signal", (_req,res)=>res.json({signal:computeSignal(),history:state.signalHistory||[]}));

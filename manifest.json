@@ -1,7 +1,7 @@
 {
   "name": "BLZ Flow Alert",
   "short_name": "BLZ Alert",
-  "description": "Live BLZ whale-flow and market-pressure monitor",
+  "description": "BLZ whale-flow monitor with DOGE and ADA price-move alerts",
   "id": "/",
   "start_url": "/",
   "scope": "/",
