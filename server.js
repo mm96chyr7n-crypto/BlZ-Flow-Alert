@@ -26,6 +26,7 @@ const RPC_URLS = {
   eth: process.env.ETH_RPC_URL || "https://ethereum-rpc.publicnode.com",
   bsc: process.env.BSC_RPC_URL || "https://bsc-rpc.publicnode.com"
 };
+const RPC_CONFIRMATIONS = { eth:12, bsc:20 };
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const STATE_FILE = path.join(__dirname, "state.json");
 
@@ -217,8 +218,10 @@ async function scanEvm(chain, startBlock) {
   try {
     const head = await getLatestBlock(chain);
     if (!head) throw new Error("Public RPC unavailable");
-    const fromBlock = startBlock ? Math.min(startBlock+1,head) : Math.max(0,head-2);
-    const toBlock = Math.min(head,fromBlock+999);
+    const confirmedHead=Math.max(0,head-RPC_CONFIRMATIONS[chain]);
+    if(startBlock>=confirmedHead) return {events:[],latest:startBlock,ok:true,source:"public-rpc",catchingUp:false};
+    const fromBlock = startBlock ? startBlock+1 : Math.max(0,confirmedHead-2);
+    const toBlock = Math.min(confirmedHead,fromBlock+999);
     const logs = await rpc(chain,"eth_getLogs",[{address:contract,fromBlock:`0x${fromBlock.toString(16)}`,toBlock:`0x${toBlock.toString(16)}`,topics:[TRANSFER_TOPIC]}]);
     if (!Array.isArray(logs)) throw new Error("Invalid RPC log response");
     const now=Date.now(), blockSeconds=chain==="eth"?12:3;
