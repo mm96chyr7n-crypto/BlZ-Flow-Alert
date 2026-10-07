@@ -422,11 +422,20 @@ async function scanRapidMovers() {
     }
 
     if (alerts.length) {
-      state.rapidMovers = [
-        ...alerts,
-        ...(state.rapidMovers || [])
-      ].slice(0, 50);
-    }
+  const existing = state.rapidMovers || [];
+
+  for (const alert of alerts) {
+    const duplicate = existing.some(x =>
+      x.symbol === alert.symbol &&
+      x.window === alert.window &&
+      Math.abs(x.at - alert.at) < 60000
+    );
+
+    if (!duplicate) existing.unshift(alert);
+  }
+
+  state.rapidMovers = existing.slice(0, 50);
+}
 
     return alerts;
   } catch (e) {
