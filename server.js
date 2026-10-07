@@ -86,11 +86,56 @@ async function fetchDigitalSurge() {
     const baseline=[...history].reverse().find(x=>at-x.at>=60*60e3);
     digitalSurge={ok:true,...quote,change1h:baseline?.sellAud>0?100*(quote.sellAud/baseline.sellAud-1):null,at,source:"Digital Surge"};
     await checkDigitalSurgeAlerts();
+    await checkDigitalSurgeSpike();
   } catch(e) {
     digitalSurge={...digitalSurge,ok:false,error:String(e.response?.status||e.message||"unavailable").slice(0,100)};
   }
   lastDigitalSurgeAt=Date.now();
   return digitalSurge;
+async function checkDigitalSurgeSpike() {
+  const history = state.digitalSurgeHistory || [];
+  if (history.length < 2) return;
+
+  const now = Date.now();
+  const recent = history.filter(x =>
+    x &&
+    Number(x.sellAud) > 0 &&
+    now - Number(x.at) <= 5 * 60 * 1000
+  );
+
+  if (recent.length < 2) return;
+
+  const current = Number(digitalSurge.sellAud);
+  const low = Math.min(...recent.map(x => Number(x.sellAud)));
+  const high = Math.max(...recent.map(x => Number(x.sellAud)));
+
+  if (!(current > 0) || !(low > 0)) return;
+
+  const spikeUp = 100 * (high / low - 1);
+
+  if (spikeUp >= 3) {
+    const key = "DS:BLZ:5m-spike";
+    const prior = state.moveAlertState?.[key];
+    const lastAlert = Number(prior?.at || 0);
+
+    if (now - lastAlert >= 5 * 60 * 1000) {
+      state.moveAlertState = state.moveAlertState || {};
+      state.moveAlertState[key] = {
+        active: true,
+        at: now
+      };
+
+      await recordDigitalSurgeAlert({
+        symbol: "BLZ",
+        window: "5m spike",
+        change: spikeUp,
+        aud: current,
+        kind: "spike",
+        at: now
+      });
+    }
+  }
+}
 }
 async function checkDigitalSurgeAlerts() {
   const p=digitalSurge;
@@ -257,6 +302,30 @@ function computeSignal() {
   return signal;
 }
 
+
+async function fetchRapidPrice(symbol) {
+  try {
+    const idMap = {
+      BLZ: "bluzelle",
+      DOGE: "dogecoin",
+      ADA: "cardano"
+    };
+
+    const id = idMap[symbol];
+    if (!id) return null;
+
+    const r = await axios.get(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`,
+      { timeout: 5000 }
+    );
+
+    const value = Number(r.data?.[id]?.usd);
+    return value > 0 ? value : null;
+  } catch (e) {
+    console.error("fetchRapidPrice failed:", e.message);
+    return null;
+  }
+}
 async function fetchPrices() {
   try {
     const r = await axios.get("https://api.coingecko.com/api/v3/simple/price", { params: { ids: [COINGECKO_ID,...Object.keys(EXTRA_ASSETS)].join(','), vs_currencies: "usd,aud", include_24hr_change: "true" }, timeout: 7000 });
