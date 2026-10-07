@@ -277,7 +277,7 @@ async function fetchPrices() {
       extraPrices[symbol]={usd:Number(quote.usd),aud:Number(quote.aud)||null,change24h:Number.isFinite(Number(quote.usd_24h_change))?Number(quote.usd_24h_change):null,change1h,at,source:'CoinGecko'};
     }
     await checkMoveAlerts();
-  } catch {}
+  } catch (e) { console.error("fetchPrices failed:", e.message); return price; }
   lastPriceAt = Date.now();
   return price;
 }
