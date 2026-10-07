@@ -282,7 +282,10 @@ async function fetchPrices() {
   return price;
 }
 function getPrice() {
-  if (!pricePromise) pricePromise=fetchPrices().finally(()=>{pricePromise=null});
+  if (price && Date.now() - lastPriceAt < 60000) return Promise.resolve(price);
+  if (!pricePromise) {
+    pricePromise = fetchPrices().finally(() => { pricePromise = null; });
+  }
   return pricePromise;
 }
 async function checkMoveAlerts() {
