@@ -432,6 +432,7 @@ async function scanRapidMovers() {
   }
 }
 app.get("/api/status", async (_req,res)=>{ if(!lastPriceAt||Date.now()-lastPriceAt>60000) await getPrice(); if(!lastDigitalSurgeAt||Date.now()-lastDigitalSurgeAt>60000) await fetchDigitalSurge(); res.set('Cache-Control','no-store'); res.json({ok:true,price,extraPrices,digitalSurge,digitalSurgeSellTargetAud:DS_BLZ_SELL_TARGET_AUD,moveAlerts:state.moveAlerts||[],moveThresholds:{hour:MOVE_1H_PCT,day:MOVE_24H_PCT},pollSeconds:POLL_SECONDS,thresholds:{large:DEFAULT_THRESHOLD,major:MAJOR_THRESHOLD,critical:CRITICAL_THRESHOLD},exchangeWallets:addressBook.length,stats:computeStats(),signal:computeSignal(),lastBlocks:state.lastBlock,updatedAt:state.updatedAt,telegramConfigured:Boolean(process.env.TELEGRAM_BOT_TOKEN&&process.env.TELEGRAM_CHAT_ID),markets:marketState.aggregate,chainHealth,scanError,monitoringConfigured:Boolean(RPC_URLS.eth),monitoringMode:"public-rpc"}); });
+app.get("/api/rapid-movers", (_req,res)=>res.json({rapidMovers:state.rapidMovers||[]}));
 app.get("/api/events", (_req,res)=>res.json({events:state.recent}));
 app.get("/api/markets", async (_req,res)=>{ if(!marketState.updatedAt||Date.now()-marketState.updatedAt>15000) await getMarkets(); res.json(marketState); });
 app.get("/api/signal", (_req,res)=>res.json({signal:computeSignal(),history:state.signalHistory||[]}));
