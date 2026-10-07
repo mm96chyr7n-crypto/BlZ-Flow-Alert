@@ -393,49 +393,71 @@ async function scanRapidMovers() {
     await getPrice();
 
     const alerts = [];
+    const now = Date.now();
 
-    for (const [symbol, p] of Object.entries(extraPrices || {})) {
+    for (const [symbol, p] of Object.entries(extraPrices)) {
       const history = state.assetHistory?.[symbol] || [];
-      if (history.length < 2) continue;
-
-      const now = Date.now();
       const current = Number(p.usd);
-      if (!(current > 0)) continue;
 
-      const baseline = [...history]
-        .reverse()
-        .find(x => now - x.at >= 60 * 1000);
+      if (!(current > 0) || history.length < 2) continue;
 
-      if (!baseline || !(Number(baseline.usd) > 0)) continue;
+      // Look at every observation from the last 5 minutes.
+      // This helps catch a spike even if the price retreats quickly.
+      const recent = history.filter(
+        x =>
+          now - x.at <= 5 * 60 * 1000 &&
+          Number(x.usd) > 0
+      );
 
-      const change = 100 * (current / Number(baseline.usd) - 1);
+      if (recent.length < 2) continue;
 
-      if (Math.abs(change) >= 1) {
-        alerts.push({
-          symbol,
-          window: "1m",
-          change,
-          usd: current,
-          at: now
-        });
+      const prices = recent.map(x => Number(x.usd));
+      prices.push(current);
+
+      const low = Math.min(...prices);
+      const high = Math.max(...prices);
+
+      if (!(low > 0) || !(high > 0)) continue;
+
+      const spikeUp = 100 * (high / low - 1);
+      const spikeDown = 100 * (low / high - 1);
+
+      let change = 0;
+
+      if (spikeUp >= 1) {
+        change = spikeUp;
+      } else if (Math.abs(spikeDown) >= 1) {
+        change = spikeDown;
+      } else {
+        continue;
       }
+
+      alerts.push({
+        symbol,
+        window: "5m high/low",
+        change,
+        usd: current,
+        low,
+        high,
+        at: now
+      });
     }
 
     if (alerts.length) {
-  const existing = state.rapidMovers || [];
+      const existing = state.rapidMovers || [];
 
-  for (const alert of alerts) {
-    const duplicate = existing.some(x =>
-      x.symbol === alert.symbol &&
-      x.window === alert.window &&
-      Math.abs(x.at - alert.at) < 60000
-    );
+      for (const alert of alerts) {
+        const duplicate = existing.some(x =>
+          x.symbol === alert.symbol &&
+          x.window === alert.window &&
+          Math.abs(x.at - alert.at) < 5 * 60 * 1000
+        );
 
-    if (!duplicate) existing.unshift(alert);
-  }
+        if (!duplicate) existing.unshift(alert);
+      }
 
-  state.rapidMovers = existing.slice(0, 50);
-}
+      state.rapidMovers = existing.slice(0, 50);
+    }
 
     return alerts;
   } catch (e) {
