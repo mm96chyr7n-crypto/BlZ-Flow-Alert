@@ -394,5 +394,5 @@ app.post("/api/scan", (_req,res)=>res.status(405).json({error:'Scanning runs on 
 app.use((req,res)=>{ if(req.method !== "GET") return res.sendStatus(404); res.sendFile(path.join(__dirname,"index.html")); });
 
 setInterval(()=>scan().catch(()=>{}),POLL_SECONDS*1000); scan().catch(()=>{});
-
+setInterval(()=>scanRapidMovers().catch(()=>{}),60*1000); scanRapidMovers().catch(()=>{});
 app.listen(PORT,()=>console.log(`BLZ Flow Alert running on http://localhost:${PORT}`));
