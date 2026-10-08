@@ -351,7 +351,7 @@ async function fetchPrices() {
   return price;
 }
 function getPrice() {
-  if (price && Date.now() - lastPriceAt < 60000) return Promise.resolve(price);
+  if (Date.now() - lastPriceAt < 180000) return Promise.resolve(price);
   if (!pricePromise) {
     pricePromise = fetchPrices().finally(() => { pricePromise = null; });
   }
@@ -457,15 +457,58 @@ function scan() {
   if (!scanPromise) scanPromise = scanOnce().catch(e => { scanError = e.message; throw e; }).finally(() => { scanPromise = null; });
   return scanPromise;
 }
+
+async function fetchMarketWidePrices() {
+  try {
+    const response = await axios.get(
+      "https://api.binance.com/api/v3/ticker/price",
+      { timeout: 10000 }
+    );
+
+    const prices = {};
+
+    for (const coin of response.data) {
+      if (!coin.symbol.endsWith("USDT")) continue;
+
+      const symbol = coin.symbol.slice(0, -4);
+      const usd = Number(coin.price);
+
+      if (symbol && Number.isFinite(usd) && usd > 0) {
+        prices[symbol] = { usd };
+      }
+    }
+
+    return prices;
+  } catch (error) {
+    console.error("Market-wide price fetch failed:", error.message);
+    return null;
+  }
+}
+
 async function scanRapidMovers() {
   try {
     await getPrice();
+const marketPrices = await fetchMarketWidePrices();
+    if (marketPrices) {
+  state.marketWideHistory ||= {};
 
+  for (const [symbol, p] of Object.entries(marketPrices)) {
+    const history = state.marketWideHistory[symbol] || [];
+
+    history.push({ at: Date.now(), usd: p.usd });
+
+    state.marketWideHistory[symbol] = history
+      .filter(x => Date.now() - x.at <= 6 * 60 * 1000)
+      .slice(-20);
+  }
+}
     const alerts = [];
     const now = Date.now();
 
-    for (const [symbol, p] of Object.entries(extraPrices)) {
-      const history = state.assetHistory?.[symbol] || [];
+    for (const [symbol, p] of Object.entries(marketPrices || extraPrices)) {
+      const history = marketPrices
+  ? (state.marketWideHistory?.[symbol] || [])
+  : (state.assetHistory?.[symbol] || []);
       const current = Number(p.usd);
 
       if (!(current > 0) || history.length < 2) continue;
