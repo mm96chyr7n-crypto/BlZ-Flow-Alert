@@ -459,56 +459,45 @@ function scan() {
 }
 
 
+
 async function fetchMarketWidePrices() {
   try {
-    const response = await axios.get(
-      "https://api.kraken.com/0/public/Ticker",
-      { timeout: 20000 }
-    );
+    const response = await axios.get(DS_TICKER_URL, {
+      timeout: 20000
+    });
 
-    if (
-      !response.data ||
-      response.data.error?.length ||
-      !response.data.result
-    ) {
-      throw new Error("Invalid Kraken response");
-    }
-
+    const data = response.data;
     const prices = {};
 
-    for (const [pair, ticker] of Object.entries(response.data.result)) {
-      if (!pair.endsWith("USD") || pair.endsWith("USDT") || pair.endsWith("USDC")) continue;
+    const rows = Array.isArray(data?.results)
+      ? data.results.flatMap(item => Object.entries(item || {}))
+      : Object.entries(data || {});
 
-      let symbol = pair.slice(0, -3);
-      if (symbol.startsWith("X") && symbol.length === 4) {
-        symbol = symbol.slice(1);
-      }
-      if (symbol.startsWith("Z") && symbol.length === 4) {
-        symbol = symbol.slice(1);
-      }
-      if (symbol === "XBT") symbol = "BTC";
+    for (const [symbol, ticker] of rows) {
+      if (!ticker || ticker.tradeable !== true) continue;
 
-      const usd = Number(ticker.c?.[0]);
+      const aud = Number(ticker.sell);
 
-      if (symbol && Number.isFinite(usd) && usd > 0) {
-        prices[symbol] = { usd };
+      if (Number.isFinite(aud) && aud > 0) {
+        prices[symbol.toUpperCase()] = { usd: aud };
       }
     }
 
     console.log(
-      "Kraken market-wide coins:",
+      "Digital Surge tradeable coins:",
       Object.keys(prices).length
     );
 
     return prices;
   } catch (error) {
     console.error(
-      "Kraken market-wide price fetch failed:",
+      "Digital Surge price fetch failed:",
       error.message
     );
     return null;
   }
 }
+
 
 
 async function scanRapidMovers() {
