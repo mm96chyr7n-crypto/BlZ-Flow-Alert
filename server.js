@@ -595,18 +595,22 @@ const marketPrices = await fetchMarketWidePrices();
   process.env.TELEGRAM_CHAT_ID
 ) {
   for (const alert of alerts) {
-    if (Math.abs(alert.change) < 3) continue;
-
+    if (Math.abs(alert.change) < 2) continue;
+const alertLevel = Math.abs(alert.change) >= 5
+  ? "strong" : "early";
     const duplicate = (state.rapidTelegramSent || []).some(x =>
   x.symbol === alert.symbol &&
   x.window === alert.window &&
+  x.level === alertLevel &&
   Date.now() - x.at < 5 * 60 * 1000
 );
 
     if (duplicate) continue;
-
+const alertTitle = alertLevel === "strong"
+  ? "🚨 STRONG MOVE (5%+)"
+  : "⚡ EARLY WARNING (2%+)";
     const message =
-      `⚡ RAPID MOVER: ${alert.symbol}\n` +
+      `${alertTitle}: ${alert.symbol}\n` +
       `5-minute movement: ${alert.change.toFixed(2)}%\n` +
       `Price: AUD $${alert.usd}\n` +
       `Source: Digital Surge`;
@@ -624,6 +628,7 @@ const marketPrices = await fetchMarketWidePrices();
 state.rapidTelegramSent.push({
   symbol: alert.symbol,
   window: alert.window,
+  level: alertLevel,
   at: Date.now()
 });
 state.rapidTelegramSent =
