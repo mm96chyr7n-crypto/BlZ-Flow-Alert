@@ -460,6 +460,14 @@ function scan() {
 
 async function fetchMarketWidePrices() {
   try {
+    const krakenTest = await axios.get(
+  "https://api.kraken.com/0/public/Ticker?pair=XBTUSD",
+  { timeout: 10000 }
+);
+console.log(
+  "KRAKEN CONNECTION TEST:",
+  krakenTest.data?.error
+);
     const response = await axios.get(
       "https://api.binance.com/api/v3/ticker/price",
       { timeout: 10000 }
