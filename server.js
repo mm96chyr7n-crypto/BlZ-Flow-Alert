@@ -458,40 +458,58 @@ function scan() {
   return scanPromise;
 }
 
+
 async function fetchMarketWidePrices() {
   try {
-    const krakenTest = await axios.get(
-  "https://api.kraken.com/0/public/Ticker?pair=XBTUSD",
-  { timeout: 10000 }
-);
-console.log(
-  "KRAKEN CONNECTION TEST:",
-  krakenTest.data?.error
-);
     const response = await axios.get(
-      "https://api.binance.com/api/v3/ticker/price",
-      { timeout: 10000 }
+      "https://api.kraken.com/0/public/Ticker",
+      { timeout: 20000 }
     );
+
+    if (
+      !response.data ||
+      response.data.error?.length ||
+      !response.data.result
+    ) {
+      throw new Error("Invalid Kraken response");
+    }
 
     const prices = {};
 
-    for (const coin of response.data) {
-      if (!coin.symbol.endsWith("USDT")) continue;
+    for (const [pair, ticker] of Object.entries(response.data.result)) {
+      if (!pair.endsWith("USD") || pair.endsWith("USDT") || pair.endsWith("USDC")) continue;
 
-      const symbol = coin.symbol.slice(0, -4);
-      const usd = Number(coin.price);
+      let symbol = pair.slice(0, -3);
+      if (symbol.startsWith("X") && symbol.length === 4) {
+        symbol = symbol.slice(1);
+      }
+      if (symbol.startsWith("Z") && symbol.length === 4) {
+        symbol = symbol.slice(1);
+      }
+      if (symbol === "XBT") symbol = "BTC";
+
+      const usd = Number(ticker.c?.[0]);
 
       if (symbol && Number.isFinite(usd) && usd > 0) {
         prices[symbol] = { usd };
       }
     }
 
+    console.log(
+      "Kraken market-wide coins:",
+      Object.keys(prices).length
+    );
+
     return prices;
   } catch (error) {
-    console.error("Market-wide price fetch failed:", error.message);
+    console.error(
+      "Kraken market-wide price fetch failed:",
+      error.message
+    );
     return null;
   }
 }
+
 
 async function scanRapidMovers() {
   try {
