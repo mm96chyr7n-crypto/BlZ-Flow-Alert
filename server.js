@@ -549,15 +549,14 @@ const marketPrices = await fetchMarketWidePrices();
       const spikeUp = 100 * (high / low - 1);
       const spikeDown = 100 * (low / high - 1);
 
-      let change = 0;
+      const first = Number(recent[0].usd);
+const last = Number(current);
 
-      if (spikeUp >= 1) {
-        change = spikeUp;
-      } else if (Math.abs(spikeDown) >= 1) {
-        change = spikeDown;
-      } else {
-        continue;
-      }
+if (!(first > 0) || !(last > 0)) continue;
+
+const change = 100 * (last / first - 1);
+
+if (Math.abs(change) < 1) continue;
 
       alerts.push({
         symbol,
