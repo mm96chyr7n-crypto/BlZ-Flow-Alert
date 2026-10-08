@@ -601,6 +601,51 @@ const marketPrices = await fetchMarketWidePrices();
   .slice(0, 50);
     }
 
+  if (
+  process.env.TELEGRAM_BOT_TOKEN &&
+  process.env.TELEGRAM_CHAT_ID
+) {
+  for (const alert of alerts) {
+    if (Math.abs(alert.change) < 3) continue;
+
+    const duplicate = (state.rapidTelegramSent || []).some(x =>
+  x.symbol === alert.symbol &&
+  x.window === alert.window &&
+  Date.now() - x.at < 5 * 60 * 1000
+);
+
+    if (duplicate) continue;
+
+    const message =
+      `⚡ RAPID MOVER: ${alert.symbol}\n` +
+      `5-minute movement: ${alert.change.toFixed(2)}%\n` +
+      `Price: USD $${alert.usd}\n` +
+      `Source: Kraken`;
+
+    try {
+      await axios.post(
+        `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+          chat_id: process.env.TELEGRAM_CHAT_ID,
+          text: message
+        },
+        { timeout: 10000 }
+      );
+      state.rapidTelegramSent ||= [];
+state.rapidTelegramSent.push({
+  symbol: alert.symbol,
+  window: alert.window,
+  at: Date.now()
+});
+state.rapidTelegramSent =
+  state.rapidTelegramSent.filter(x =>
+    Date.now() - x.at < 5 * 60 * 1000
+  );
+    } catch (e) {
+      console.error("Rapid mover Telegram failed:", e.message);
+    }
+  }
+}
     return alerts;
   } catch (e) {
     console.error("scanRapidMovers failed:", e.message);
