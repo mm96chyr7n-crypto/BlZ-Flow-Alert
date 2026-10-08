@@ -351,7 +351,7 @@ async function fetchPrices() {
   return price;
 }
 function getPrice() {
-  if (Date.now() - lastPriceAt < 180000) return Promise.resolve(price);
+  if (Date.now() - lastPriceAt < 300000) return Promise.resolve(price);
   if (!pricePromise) {
     pricePromise = fetchPrices().finally(() => { pricePromise = null; });
   }
