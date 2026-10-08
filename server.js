@@ -608,8 +608,8 @@ const marketPrices = await fetchMarketWidePrices();
     const message =
       `⚡ RAPID MOVER: ${alert.symbol}\n` +
       `5-minute movement: ${alert.change.toFixed(2)}%\n` +
-      `Price: USD $${alert.usd}\n` +
-      `Source: Kraken`;
+      `Price: AUD $${alert.usd}\n` +
+      `Source: Digital Surge`;
 
     try {
       await axios.post(
