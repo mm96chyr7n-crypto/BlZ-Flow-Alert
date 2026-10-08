@@ -512,7 +512,7 @@ async function scanRapidMovers() {
       });
     }
 
-    if (alerts.length) {
+    {
       const existing = state.rapidMovers || [];
 
       for (const alert of alerts) {
@@ -525,7 +525,11 @@ async function scanRapidMovers() {
         if (!duplicate) existing.unshift(alert);
       }
 
-      state.rapidMovers = existing.slice(0, 50);
+      state.rapidMovers = existing
+  .filter(x => Number.isFinite(Number(x.at)) &&
+    Date.now() - Number(x.at) >= 0 &&
+    Date.now() - Number(x.at) < 24 * 60 * 60 * 1000)
+  .slice(0, 50);
     }
 
     return alerts;
